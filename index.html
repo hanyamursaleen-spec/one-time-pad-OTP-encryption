@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>One-Time Pad — Perfect Secrecy Console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>ONE-TIME PAD</h1>
+    <p>Information-theoretically secure encryption — Shannon's Perfect Secrecy, 1949</p>
+    <div class="badge-row">
+      <span class="badge">C = (M + K) mod 256</span>
+      <span class="badge">M = (C − K) mod 256</span>
+      <span class="badge">CSPRNG key source</span>
+    </div>
+  </header>
+
+  <div class="panel">
+    <h2><span class="dot"></span>What "unbreakable" actually means here</h2>
+    <div class="warning-box">
+      <strong>This isn't about being "hard for an AI."</strong> A correctly used OTP has
+      <em>zero</em> exploitable structure — every possible plaintext of the same length is an
+      equally valid explanation of any given ciphertext, so there is nothing for any
+      attacker (human, classical computer, or AI) to compute their way through. That guarantee
+      depends entirely on three operational rules, which no software can enforce for you once
+      the key leaves this page: <strong>(1)</strong> the key is truly random (this page uses
+      <code>crypto.getRandomValues</code>, a CSPRNG — never a plain <code>Math.random()</code>),
+      <strong>(2)</strong> the key is <u>never reused</u> for another message, and
+      <strong>(3)</strong> the key stays as secret as the message itself and is discarded after
+      one use. This tool is for learning and testing the algorithm — treat it as a demo, not a
+      channel for exchanging real secrets over an untrusted machine.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="dot"></span>Encrypt</h2>
+    <label>Plaintext message</label>
+    <textarea id="enc-message" rows="3" placeholder="Type your message... (each character must be a value 0-255)"></textarea>
+
+    <div class="row">
+      <div>
+        <div class="label-flex">
+          <label style="margin-top:14px">Key (hex)</label>
+        </div>
+        <input type="text" id="enc-key" placeholder="Click 'Generate Key' or paste an existing hex key">
+        <div class="key-length-note" id="enc-key-note">No key yet.</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-secondary" id="gen-key-btn">Generate Random Key (matches message length)</button>
+      <button class="btn-primary" id="encrypt-btn">Encrypt</button>
+    </div>
+
+    <label>Ciphertext (hex)</label>
+    <textarea id="enc-output" rows="2" readonly placeholder="Ciphertext will appear here..."></textarea>
+
+    <div class="status" id="enc-status"></div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="dot"></span>Decrypt</h2>
+    <label>Ciphertext (hex)</label>
+    <textarea id="dec-cipher" rows="2" placeholder="Paste ciphertext hex here..."></textarea>
+
+    <label>Key (hex)</label>
+    <input type="text" id="dec-key" placeholder="Paste the exact key used to encrypt this message">
+
+    <div class="btn-row">
+      <button class="btn-primary" id="decrypt-btn">Decrypt</button>
+      <button class="btn-ghost" id="use-last-btn">Use last encrypted output + key</button>
+    </div>
+
+    <label>Recovered plaintext</label>
+    <textarea id="dec-output" rows="3" readonly placeholder="Decrypted message will appear here..."></textarea>
+
+    <div class="status" id="dec-status"></div>
+  </div>
+
+  <footer>otp.py &nbsp;·&nbsp; index.html &nbsp;·&nbsp; style.css &nbsp;— mod-256 elementwise addition/subtraction, byte-for-byte identical to the Python CLI</footer>
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// One-Time Pad core operations (mirrors otp.py exactly: latin-1 byte
+// encoding, mod-256 addition/subtraction, CSPRNG key generation).
+// ---------------------------------------------------------------------
+
+function textToBytes(str) {
+  // latin-1 / extended-ASCII style mapping: one char -> one byte (0-255)
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code > 255) {
+      throw new Error(`Character "${str[i]}" (code ${code}) is outside the 0-255 extended-ASCII range this OTP operates on.`);
+    }
+    bytes[i] = code;
+  }
+  return bytes;
+}
+
+function bytesToText(bytes) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  return out;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(hex) {
+  const clean = hex.trim().replace(/\s+/g, "");
+  if (clean.length % 2 !== 0) throw new Error("Hex string has an odd number of characters.");
+  if (clean.length === 0) throw new Error("Hex string is empty.");
+  if (!/^[0-9a-fA-F]+$/.test(clean)) throw new Error("Hex string contains non-hex characters.");
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+function generateKey(length) {
+  if (length <= 0) throw new Error("Key length must be positive.");
+  const key = new Uint8Array(length);
+  crypto.getRandomValues(key); // CSPRNG — true randomness, not Math.random()
+  return key;
+}
+
+function otpEncrypt(messageBytes, keyBytes) {
+  if (keyBytes.length < messageBytes.length) {
+    throw new Error(`Key is shorter than the message (${keyBytes.length} < ${messageBytes.length} bytes).`);
+  }
+  const out = new Uint8Array(messageBytes.length);
+  for (let i = 0; i < messageBytes.length; i++) {
+    out[i] = (messageBytes[i] + keyBytes[i]) % 256;
+  }
+  return out;
+}
+
+function otpDecrypt(cipherBytes, keyBytes) {
+  if (keyBytes.length < cipherBytes.length) {
+    throw new Error(`Key is shorter than the ciphertext (${keyBytes.length} < ${cipherBytes.length} bytes).`);
+  }
+  const out = new Uint8Array(cipherBytes.length);
+  for (let i = 0; i < cipherBytes.length; i++) {
+    out[i] = (cipherBytes[i] - keyBytes[i] + 256) % 256;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------
+// UI wiring
+// ---------------------------------------------------------------------
+
+const $ = id => document.getElementById(id);
+
+function setStatus(el, message, kind) {
+  el.textContent = message;
+  el.className = "status show " + kind;
+}
+
+let lastCipherHex = null;
+let lastKeyHex = null;
+
+$("gen-key-btn").addEventListener("click", () => {
+  const msg = $("enc-message").value;
+  if (!msg) {
+    setStatus($("enc-status"), "Type a message first so the key can match its length.", "err");
+    return;
+  }
+  try {
+    const msgBytes = textToBytes(msg);
+    const key = generateKey(msgBytes.length);
+    const hex = bytesToHex(key);
+    $("enc-key").value = hex;
+    $("enc-key-note").textContent = `Key length: ${key.length} bytes (matches message). Truly random via crypto.getRandomValues.`;
+    setStatus($("enc-status"), "Fresh random key generated. Save it securely — you'll need it to decrypt.", "ok");
+  } catch (e) {
+    setStatus($("enc-status"), "Error: " + e.message, "err");
+  }
+});
+
+$("encrypt-btn").addEventListener("click", () => {
+  try {
+    const msg = $("enc-message").value;
+    if (!msg) throw new Error("Enter a message to encrypt.");
+    const keyHex = $("enc-key").value;
+    if (!keyHex) throw new Error("Generate or paste a key first.");
+
+    const msgBytes = textToBytes(msg);
+    const keyBytes = hexToBytes(keyHex);
+    const cipher = otpEncrypt(msgBytes, keyBytes);
+    const cipherHex = bytesToHex(cipher);
+
+    $("enc-output").value = cipherHex;
+    lastCipherHex = cipherHex;
+    lastKeyHex = keyHex.trim();
+
+    setStatus($("enc-status"), `Encrypted ${msgBytes.length} bytes. Remember: never reuse this key for another message.`, "ok");
+  } catch (e) {
+    setStatus($("enc-status"), "Error: " + e.message, "err");
+  }
+});
+
+$("decrypt-btn").addEventListener("click", () => {
+  try {
+    const cipherHex = $("dec-cipher").value;
+    const keyHex = $("dec-key").value;
+    if (!cipherHex) throw new Error("Paste a ciphertext (hex) to decrypt.");
+    if (!keyHex) throw new Error("Paste the key (hex) used to encrypt this message.");
+
+    const cipherBytes = hexToBytes(cipherHex);
+    const keyBytes = hexToBytes(keyHex);
+    const plainBytes = otpDecrypt(cipherBytes, keyBytes);
+    const plainText = bytesToText(plainBytes);
+
+    $("dec-output").value = plainText;
+    setStatus($("dec-status"), `Decrypted ${plainBytes.length} bytes successfully.`, "ok");
+  } catch (e) {
+    setStatus($("dec-status"), "Error: " + e.message, "err");
+  }
+});
+
+$("use-last-btn").addEventListener("click", () => {
+  if (!lastCipherHex || !lastKeyHex) {
+    setStatus($("dec-status"), "No encrypted output yet — encrypt a message first.", "err");
+    return;
+  }
+  $("dec-cipher").value = lastCipherHex;
+  $("dec-key").value = lastKeyHex;
+  setStatus($("dec-status"), "Loaded the last encryption's ciphertext and key.", "ok");
+});
+</script>
+</body>
+</html>
